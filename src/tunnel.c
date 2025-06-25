@@ -9,6 +9,14 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
+ssize_t write_tun(int tun_fd, char *buf, size_t len)
+{
+  int bytes_written = write(tun_fd, buf, len);
+  if (bytes_written != len) {
+    fprintf(stderr, "write_tun: expected %lu got %d\n", len, bytes_written);
+  }
+  return bytes_written;
+}
 
 ssize_t read_tun(int tun_fd, char *buf, size_t len)
 {
@@ -114,8 +122,9 @@ int main(void) {
   */
 
   char buffer[1024];
+  int bytes_read;
   while (1) {
-    int bytes_read = read_tun(fd, buffer, 1024);
+    bytes_read = read_tun(fd, buffer, 1024);
     printf("bytes_read = %d\n", bytes_read);
     for (ssize_t i = 0; i < bytes_read; i++) {
       if (i % 20 == 0) {
@@ -124,6 +133,16 @@ int main(void) {
       printf("%02x ", (unsigned char)buffer[i]);
     }
     printf("\n");
+    if (bytes_read != 56) {
+      break;
+    }
+  }
+
+  char tmp[5];
+  while (1) {
+    write(1, ">", 1);
+    read(0, tmp, 1);
+    write_tun(fd, buffer + 4, bytes_read - 4);
   }
 
   return 0;
