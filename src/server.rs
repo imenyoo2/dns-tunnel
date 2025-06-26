@@ -1,15 +1,17 @@
 
-use std::net::UdpSocket;
+use tokio::net::UdpSocket;
 use trust_dns_proto::op::{Message, MessageType, OpCode, Query};
 use trust_dns_proto::rr::{Name, Record, RecordType, RData};
 use trust_dns_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
 use base64::{engine::general_purpose, Engine as _};
-use std::fs::File;
-use std::io::prelude::*;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use tokio::io::{self, AsyncReadExt};
+
 mod tunnel;
 
 
-fn dns_encapsulate(socket: &UdpSocket, data: &[u8], msg: Message, src: std::net::SocketAddr) -> bool {
+async fn dns_encapsulate(socket: &UdpSocket, data: &[u8], msg: Message, src: std::net::SocketAddr) -> bool {
     // Prepare response message
     let mut resp = Message::new();
     resp.set_id(msg.id());
@@ -47,17 +49,18 @@ fn dns_encapsulate(socket: &UdpSocket, data: &[u8], msg: Message, src: std::net:
     }
 
     // Send response
-    socket.send_to(&resp_buffer, src).unwrap();
+    socket.send_to(&resp_buffer, src).await.unwrap();
     println!("Sent response to {}", src);
 
     return true;
 }
 
-fn dns_receive(socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message, Vec<u8>), ()> {
+
+async fn dns_receive(socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message, Vec<u8>), ()> {
     let mut buf = [0u8; 64 * 1024];
 
     println!("[+] recieving from client");
-    let (amt, src) = socket.recv_from(&mut buf).or_else(|_| Err(()))?;
+    let (amt, src) = socket.recv_from(&mut buf).await.or_else(|_| Err(()))?;
     println!("[+] done recieving from client");
 
     // Convert the bytes to a string and print it
@@ -71,10 +74,30 @@ fn dns_receive(socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message, Vec
 
 }
 
+/*
+async fn receive_and_write_packets(dev: &mut File, socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message), ()> {
+    if let Ok((src, msg, data)) = dns_receive(&socket).await {
+        tunnel::hexdump(&data);
+        println!("[+] writing data");
+        let _ = dev.write_all(&data);
+        println!("[+] done writing data");
+        return Ok((src, msg));
+    } else {
+        return Err(());
+    }
+}
 
-fn main() -> Result<(),()> {
+async fn read_packets_and_send(dev: &mut File, packet: &mut [u8], socket: &UdpSocket, server_addr: String, src) {
+    if let Ok(bytes_readed) = dev.read(&mut packet) {
+        dns_encapsulate(&socket, &packet[0..bytes_readed], msg, src).await;
+    }
+}
+*/
+
+#[tokio::main]
+async fn main() -> Result<(),()> {
     // Bind the UDP socket to localhost:8080
-    let socket = UdpSocket::bind("0.0.0.0:53").or_else(|_| Err(()))?;
+    let socket = UdpSocket::bind("0.0.0.0:53").await.or_else(|_| Err(()))?;
     println!("UDP server listening on 0.0.0.0:53");
 
     let mut dev: File = tunnel::open_tunnel(String::from("tun38"));
@@ -88,16 +111,15 @@ fn main() -> Result<(),()> {
 
     loop {
         // Receive a message from any client
-        if let Ok((src, msg, data)) = dns_receive(&socket) {
+        if let Ok((src, msg, data)) = dns_receive(&socket).await {
             tunnel::hexdump(&data);
             println!("[+] writing data");
-            let _ = dev.write_all(&data);
+            let _ = dev.write_all(&data).await;
             println!("[+] done writing data");
-            if let Ok(bytes_readed) = dev.read(&mut packet) {
-                dns_encapsulate(&socket, &packet[0..bytes_readed], msg, src);
+            if let Ok(bytes_readed) = dev.read(&mut packet).await {
+                dns_encapsulate(&socket, &packet[0..bytes_readed], msg, src).await;
             }
         }
-
 
     }
 

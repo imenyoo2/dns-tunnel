@@ -1,10 +1,11 @@
-use std::net::UdpSocket;
+use tokio::net::UdpSocket;
 use trust_dns_proto::op::{Message, MessageType, OpCode, Query};
 use trust_dns_proto::rr::{Name, RecordType};
 use trust_dns_proto::serialize::binary::{BinDecodable, BinEncodable, BinDecoder};
 use base64::{engine::general_purpose, Engine as _};
-use std::fs::File;
-use std::io::prelude::*;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use tokio::io::AsyncReadExt;
 mod tunnel;
 
 
@@ -15,10 +16,10 @@ fn debug(msg: &str) {
     }
 }
 
-fn dns_receive(socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message, Vec<u8>), ()> {
+async fn dns_receive(socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message, Vec<u8>), ()> {
     let mut buf = [0u8; 64 * 1024];
 
-    let (amt, src) = socket.recv_from(&mut buf).or_else(|_| Err(()))?;
+    let (amt, src) = socket.recv_from(&mut buf).await.or_else(|_| Err(()))?;
 
     // Convert the bytes to a string and print it
     let mut msg = Message::from_bytes(&buf[..amt]).or_else(|_| Err(()))?;
@@ -54,7 +55,7 @@ fn name_format_array(arr: &[u8]) -> Vec<u8> {
 }
 
 // returns if succeeded or not
-fn dns_encapsulate(socket: &UdpSocket, address_to: String, data: &[u8]) -> Result<usize, ()> {
+async fn dns_encapsulate(socket: &UdpSocket, address_to: String, data: &[u8]) -> Result<usize, ()> {
 
     //assert!(data.len() <= 200);
 
@@ -76,16 +77,16 @@ fn dns_encapsulate(socket: &UdpSocket, address_to: String, data: &[u8]) -> Resul
 
     // Send query
     debug(&format!("sending DNS query to {}", &address_to));
-    return socket.send_to(&req_buffer, &address_to).or_else(|_| Err(()));
+    return socket.send_to(&req_buffer, &address_to).await.or_else(|_| Err(()));
 
 }
 
 
-fn compute_mtu(socket: &UdpSocket, address_to: String) -> usize {
+async fn compute_mtu(socket: &UdpSocket, address_to: String) -> usize {
     for i in (10..0xff).step_by(10).rev() {
         let tmp_data = vec![0x41; i];
-        if let Ok(sent_data) = dns_encapsulate(socket, address_to.clone(), &tmp_data) {
-            if let Ok((_, _, data)) =  dns_receive(socket) {
+        if let Ok(sent_data) = dns_encapsulate(socket, address_to.clone(), &tmp_data).await {
+            if let Ok((_, _, data)) =  dns_receive(socket).await {
                 return i;
             }
         }
@@ -93,14 +94,32 @@ fn compute_mtu(socket: &UdpSocket, address_to: String) -> usize {
     return 0;
 }
 
-fn main() -> std::io::Result<()> {
+async fn read_packets_and_send(dev: &mut File, packet: &mut [u8], socket: &UdpSocket, server_addr: String) {
+    if let Ok(bytes_readed) = dev.read(packet).await {
+        tunnel::hexdump(&packet[0..bytes_readed]);
+        let _ = dns_encapsulate(&socket, String::from(server_addr), &packet[0..bytes_readed]).await;
+    };
+}
+
+async fn receive_and_write_packets(dev: &mut File, socket: &UdpSocket) {
+    let (_, _, data) = match dns_receive(&socket).await {
+        Ok(res) => res,
+        Err(_) => return,
+    };
+    println!("got data:");
+    tunnel::hexdump(&data);
+    let _ = dev.write_all(&data);
+}
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
     // Bind a local UDP socket for sending
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-    socket.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    //socket.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
 
     //let server_addr = "172.20.10.1:53";
-    let server_addr = "192.168.156.147:53";
-    //let server_addr = "127.0.0.1:8080";
+    // let server_addr = "192.168.156.147:53";
+    let server_addr = "10.0.2.3:53";
     
 
     // setup tunnel
@@ -115,17 +134,8 @@ fn main() -> std::io::Result<()> {
     std::io::stdin().read_line(&mut buf).unwrap();
 
     loop {
-        if let Ok(bytes_readed) = dev.read(&mut packet) {
-            tunnel::hexdump(&packet[0..bytes_readed]);
-            let _ = dns_encapsulate(&socket, String::from(server_addr), &packet[0..bytes_readed]);
-            let (_, _, data) = match dns_receive(&socket) {
-                Ok(res) => res,
-                Err(_) => continue,
-            };
-            println!("got data:");
-            tunnel::hexdump(&data);
-            let _ = dev.write_all(&data);
-        };
+        read_packets_and_send(&mut dev, &mut packet, &socket, String::from(server_addr)).await;
+        receive_and_write_packets(&mut dev, &socket).await;
     }
     
     /*

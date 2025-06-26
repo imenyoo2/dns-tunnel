@@ -1,9 +1,7 @@
 
 use std::os::unix::io::FromRawFd;
-use std::fs::File;
+use tokio::fs::File;
 use nix::libc;
-use std::io::prelude::*;
-use std::io::stdin;
 
 pub fn open_tunnel(dev: String) -> File {
     let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
