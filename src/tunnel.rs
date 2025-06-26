@@ -5,7 +5,7 @@ use nix::libc;
 use std::io::prelude::*;
 use std::io::stdin;
 
-fn open_tunnel(dev: String) -> File {
+pub fn open_tunnel(dev: String) -> File {
     let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
     let fd: i32;
 
@@ -32,11 +32,9 @@ fn open_tunnel(dev: String) -> File {
 
         return File::from_raw_fd(fd);
     };
-
-
 }
 
-fn hexdump(data: &[u8]) {
+pub fn hexdump(data: &[u8]) {
     const BYTES_PER_LINE: usize = 16;
 
     for (i, chunk) in data.chunks(BYTES_PER_LINE).enumerate() {
@@ -67,6 +65,7 @@ fn hexdump(data: &[u8]) {
     }
 }
 
+/*
 fn main() {
     let mut dev: File = open_tunnel(String::from("tun38"));
 
@@ -93,3 +92,4 @@ fn main() {
     }
 
 }
+*/

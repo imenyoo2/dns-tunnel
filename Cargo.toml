@@ -11,9 +11,6 @@ path = "src/server.rs"
 name = "client"
 path = "src/client.rs"
 
-[[bin]]
-name = "tunnel"
-path = "src/tunnel.rs"
 
 [dependencies]
 base64 = "0.22.1"

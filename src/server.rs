@@ -4,6 +4,9 @@ use trust_dns_proto::op::{Message, MessageType, OpCode, Query};
 use trust_dns_proto::rr::{Name, Record, RecordType, RData};
 use trust_dns_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
 use base64::{engine::general_purpose, Engine as _};
+use std::fs::File;
+use std::io::prelude::*;
+mod tunnel;
 
 
 fn dns_encapsulate(socket: &UdpSocket, data: &[u8], msg: Message, src: std::net::SocketAddr) -> bool {
@@ -53,7 +56,9 @@ fn dns_encapsulate(socket: &UdpSocket, data: &[u8], msg: Message, src: std::net:
 fn dns_receive(socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message, Vec<u8>), ()> {
     let mut buf = [0u8; 64 * 1024];
 
+    println!("[+] recieving from client");
     let (amt, src) = socket.recv_from(&mut buf).or_else(|_| Err(()))?;
+    println!("[+] done recieving from client");
 
     // Convert the bytes to a string and print it
     let msg = Message::from_bytes(&buf[..amt]).or_else(|_| Err(()))?;
@@ -72,15 +77,44 @@ fn main() -> Result<(),()> {
     let socket = UdpSocket::bind("0.0.0.0:53").or_else(|_| Err(()))?;
     println!("UDP server listening on 0.0.0.0:53");
 
+    let mut dev: File = tunnel::open_tunnel(String::from("tun38"));
+    let mut packet: [u8; 200] = [0; 200];
+
+
+    println!("> run setup ip");
+    let mut buf = String::new();
+    std::io::stdin().read_line(&mut buf).unwrap();
+
 
     loop {
         // Receive a message from any client
-        let (src, msg, data) = dns_receive(&socket)?;
+        if let Ok((src, msg, data)) = dns_receive(&socket) {
+            tunnel::hexdump(&data);
+            println!("[+] writing data");
+            let _ = dev.write_all(&data);
+            println!("[+] done writing data");
+            if let Ok(bytes_readed) = dev.read(&mut packet) {
+                dns_encapsulate(&socket, &packet[0..bytes_readed], msg, src);
+            }
+        }
 
-        println!("received {:?} from client", data);
-
-        dns_encapsulate(&socket, "hello from server".as_bytes(), msg, src);
 
     }
+
+    /*
+    loop {
+        if let Ok(bytes_readed) = dev.read(&mut packet) {
+            tunnel::hexdump(&packet[0..bytes_readed]);
+            let _ = dns_encapsulate(&socket, String::from(server_addr), &packet[0..bytes_readed]);
+            let (_, _, data) = match dns_receive(&socket) {
+                Ok(res) => res,
+                Err(_) => continue,
+            };
+            println!("got data:");
+            tunnel::hexdump(&data);
+            let _ = dev.write_all(&data);
+        };
+    }
+    */
 }
 
