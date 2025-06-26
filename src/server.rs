@@ -21,13 +21,14 @@ fn dns_encapsulate(socket: &UdpSocket, data: &[u8], msg: Message, src: std::net:
 
         if true {
 
-            let txt_record = Record::from_rdata(
+            let mut txt_record = Record::from_rdata(
                 query.name().clone(),
                 1000,
                 RData::TXT(trust_dns_proto::rr::rdata::TXT::new(vec![general_purpose::STANDARD.encode(data)])), // base64 encoding
             );
 
             resp.add_query(query.clone());
+            txt_record.set_ttl(0); // setting time to live to 0 to avoid caching
             resp.add_answer(txt_record);
         } else {
             resp.add_query(query.clone());

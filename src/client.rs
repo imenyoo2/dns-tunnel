@@ -65,7 +65,7 @@ fn main() -> std::io::Result<()> {
     let server_addr = "10.0.2.3:53";
     //let server_addr = "127.0.0.1:8080";
 
-    dns_encapsulate(&socket, String::from(server_addr), "helloworld5".as_bytes());
+    dns_encapsulate(&socket, String::from(server_addr), &[0xff, 0xff, 0xff, 0xff]);
 
     // Receive response
     let mut resp_buffer = [0u8; 3024];
