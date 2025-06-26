@@ -7,6 +7,9 @@ use base64::{engine::general_purpose, Engine as _};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::io::{self, AsyncReadExt};
+use tokio::task;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 mod tunnel;
 
@@ -94,14 +97,28 @@ async fn read_packets_and_send(dev: &mut File, packet: &mut [u8], socket: &UdpSo
 }
 */
 
+async fn handle_dns_receive(data: Vec<u8>, msg: Message, src: std::net::SocketAddr, dev: Arc<Mutex<File>>, socket: Arc<UdpSocket>) {
+    let mut packet: [u8; 200] = [0; 200];
+    let mut file = dev.lock().await;
+
+    tunnel::hexdump(&data);
+    println!("[+] writing data");
+    let _ = file.write_all(&data).await;
+    println!("[+] done writing data");
+    if let Ok(bytes_readed) = file.read(&mut packet).await {
+        dns_encapsulate(&socket, &packet[0..bytes_readed], msg, src).await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(),()> {
     // Bind the UDP socket to localhost:8080
-    let socket = UdpSocket::bind("0.0.0.0:53").await.or_else(|_| Err(()))?;
+    let socket = Arc::new(UdpSocket::bind("0.0.0.0:53").await.or_else(|_| Err(()))?);
     println!("UDP server listening on 0.0.0.0:53");
 
-    let mut dev: File = tunnel::open_tunnel(String::from("tun38"));
-    let mut packet: [u8; 200] = [0; 200];
+    let dev: File = tunnel::open_tunnel(String::from("tun38"));
+    let shared_file = Arc::new(Mutex::new(dev));
+    //let mut packet: [u8; 200] = [0; 200];
 
 
     println!("> run setup ip");
@@ -109,18 +126,18 @@ async fn main() -> Result<(),()> {
     std::io::stdin().read_line(&mut buf).unwrap();
 
 
+    let mut handles: Vec<task::JoinHandle<()>> = Vec::new();
+
+
     loop {
         // Receive a message from any client
+        println!("tesssst");
         if let Ok((src, msg, data)) = dns_receive(&socket).await {
-            tunnel::hexdump(&data);
-            println!("[+] writing data");
-            let _ = dev.write_all(&data).await;
-            println!("[+] done writing data");
-            if let Ok(bytes_readed) = dev.read(&mut packet).await {
-                dns_encapsulate(&socket, &packet[0..bytes_readed], msg, src).await;
-            }
+            let file_clone = Arc::clone(&shared_file);
+            let socket_clone = Arc::clone(&socket);
+            let handle = task::spawn(handle_dns_receive(data, msg, src, file_clone, socket_clone));
+            handles.push(handle);
         }
-
     }
 
     /*
