@@ -1,5 +1,8 @@
 
-use std::net::UdpSocket;
+use std::os::fd::AsRawFd;
+use mio::unix::SourceFd;
+use mio::net::UdpSocket;
+use mio::{Events, Interest, Poll, Token};
 use trust_dns_proto::op::{Message, MessageType, OpCode, Query};
 use trust_dns_proto::rr::{Name, Record, RecordType, RData};
 use trust_dns_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
@@ -7,6 +10,7 @@ use base64::{engine::general_purpose, Engine as _};
 use std::fs::File;
 use std::io::prelude::*;
 mod tunnel;
+mod packet;
 
 
 fn dns_encapsulate(socket: &UdpSocket, data: &[u8], msg: Message, src: std::net::SocketAddr) -> bool {
@@ -53,6 +57,16 @@ fn dns_encapsulate(socket: &UdpSocket, data: &[u8], msg: Message, src: std::net:
     return true;
 }
 
+fn decapsulate_client_data(data: &[u8]) -> Vec<u8> {
+    let mut res: Vec<u8> = vec![];
+    let mut index = 0;
+    while index < data.len() {
+        res.extend_from_slice(data.get(((index + 1) as usize)..(data[index] as usize)).unwrap_or(&[]));
+        index = index + (data[index] as usize);
+    }
+    return res[..res.len() - "hellonylyme".len()].to_vec();
+}
+
 fn dns_receive(socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message, Vec<u8>), ()> {
     let mut buf = [0u8; 64 * 1024];
 
@@ -67,18 +81,25 @@ fn dns_receive(socket: &UdpSocket) -> Result<(std::net::SocketAddr, Message, Vec
         .and_then(|query| Some(query.name().to_bytes().or_else(|_| Err(()))))
         .ok_or(())??;
 
-    return Ok((src, msg, data[1..(data[0] + 1) as usize].to_vec()));
+    return Ok((src, msg, decapsulate_client_data(&data)));
 
 }
 
+const UDP_SOCKET: Token = Token(0);
+const DEV_TUN: Token = Token(1);
 
 fn main() -> Result<(),()> {
     // Bind the UDP socket to localhost:8080
-    let socket = UdpSocket::bind("0.0.0.0:53").or_else(|_| Err(()))?;
+    let mut socket = UdpSocket::bind("0.0.0.0:53".parse().unwrap()).map_err(|_| ())?;
     println!("UDP server listening on 0.0.0.0:53");
 
     let mut dev: File = tunnel::open_tunnel(String::from("tun38"));
-    let mut packet: [u8; 200] = [0; 200];
+
+    let mut poll = Poll::new().map_err(|_| ())?;
+
+    let raw_fd = dev.as_raw_fd();
+    let mut tun_source = SourceFd(&raw_fd);
+    poll.registry().register(&mut tun_source, DEV_TUN, Interest::READABLE).map_err(|_| ())?;
 
 
     println!("> run setup ip");
@@ -86,8 +107,52 @@ fn main() -> Result<(),()> {
     std::io::stdin().read_line(&mut buf).unwrap();
 
 
+    let mut events = Events::with_capacity(128);
+    poll.registry().register(&mut socket, UDP_SOCKET, Interest::READABLE).map_err(|_| ())?;
+
+    // buffers
+    let mut read_packets: Vec<packet::Packet> = vec![];
+    let mut write_packets: Vec<packet::Packet> = vec![];
+
     loop {
+        // wait for Events
+        poll.poll(&mut events, None).map_err(|_| ())?;
         // Receive a message from any client
+        for event in &events {
+            match event.token() {
+                UDP_SOCKET => {
+                    println!("test");
+                    if let Ok((src, msg, data)) = dns_receive(&socket) {
+                        println!("got from client:");
+                        tunnel::hexdump(&data);
+                        write_packets.push(packet::Packet::from_slice(&data));
+                        if let Some(packet) = read_packets.pop() {
+                            dns_encapsulate(&socket, packet.data(), msg, src);
+                        } else {
+                            dns_encapsulate(&socket, "no data to send".as_bytes(), msg, src);
+                        }
+                    }
+                },
+                DEV_TUN => {
+                    println!("test2");
+                    if event.is_readable() {
+                        let mut packet = [0; 200];
+                        if let Ok(bytes_readed) = dev.read(&mut packet) {
+                            read_packets.push(packet::Packet::from_slice(&packet[..bytes_readed]));
+                        }
+                    }
+                    if event.is_writable() {
+                        if let Some(packet) = write_packets.pop() {
+                            let _ = dev.write_all(&packet.data()[4..]);
+                        }
+                    }
+
+                }
+                Token(_) => unreachable!()
+            }
+        }
+
+        /*
         if let Ok((src, msg, data)) = dns_receive(&socket) {
             tunnel::hexdump(&data);
             println!("[+] writing data");
@@ -97,8 +162,7 @@ fn main() -> Result<(),()> {
                 dns_encapsulate(&socket, &packet[0..bytes_readed], msg, src);
             }
         }
-
-
+        */
     }
 
     /*

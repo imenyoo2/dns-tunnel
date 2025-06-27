@@ -99,7 +99,7 @@ fn main() -> std::io::Result<()> {
     socket.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
 
     //let server_addr = "172.20.10.1:53";
-    let server_addr = "192.168.156.147:53";
+    let server_addr = "10.0.2.3:53";
     //let server_addr = "127.0.0.1:8080";
     
 

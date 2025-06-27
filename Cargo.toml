@@ -16,3 +16,4 @@ path = "src/client.rs"
 base64 = "0.22.1"
 nix = "0.30.1"
 trust-dns-proto = "0.23.2"
+mio = { version = "0.8", features = ["os-poll", "net", "os-ext"] }

@@ -1,9 +1,9 @@
 
 
 #push:
-#	cp ./target/debug/server ~/linux_share
-#	cp ./target/debug/client ~/linux_share
-#	cp ./target/debug/tunnel ~/linux_share
+#	cp ./target/release/server ~/linux_share
+#	cp ./target/release/client ~/linux_share
+#	cp ./target/release/tunnel ~/linux_share
 
 push:
 	cp ./target/debug/server ~/goinfre/
