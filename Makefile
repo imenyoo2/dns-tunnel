@@ -1,14 +1,14 @@
 
 
-#push:
-#	cp ./target/release/server ~/linux_share
-#	cp ./target/release/client ~/linux_share
-#	cp ./target/release/tunnel ~/linux_share
-
 push:
-	cp ./target/debug/server ~/goinfre/
-	cp ./target/debug/client ~/goinfre/
-	cp ./target/debug/tunnel ~/goinfre/
+	cp ./target/release/server ~/linux_share
+	cp ./target/release/client ~/linux_share
+	cp ./target/release/tunnel ~/linux_share
+
+#push:
+#	cp ./target/debug/server ~/goinfre/
+#	cp ./target/debug/client ~/goinfre/
+#	cp ./target/debug/tunnel ~/goinfre/
 
 ip:
 	sudo ip addr add 10.0.0.2/24 dev tun38

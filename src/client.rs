@@ -6,6 +6,8 @@ use base64::{engine::general_purpose, Engine as _};
 use std::fs::File;
 use std::io::prelude::*;
 mod tunnel;
+use std::time::Duration;
+use std::thread;
 
 
 use std::env;
@@ -93,7 +95,39 @@ fn compute_mtu(socket: &UdpSocket, address_to: String) -> usize {
     return 0;
 }
 
-fn main() -> std::io::Result<()> {
+async fn send_ping(dev: &mut File, socket: &UdpSocket, server_addr: &str) {
+    println!("sending ping msg");
+    let _ = dns_encapsulate(&socket, String::from(server_addr), "PING".as_bytes());
+    let (_, _, data) = match dns_receive(&socket) {
+        Ok(res) => res, Err(_) => return,
+    };
+    println!("got data:");
+    tunnel::hexdump(&data);
+    if &data != "nodata".as_bytes() {
+        let _ = dev.write_all(&data);
+    }
+}
+
+async fn send_packet(dev: &mut File, socket: &UdpSocket, server_addr: &str) {
+    let mut packet: [u8; 200] = [0; 200];
+
+    if let Ok(bytes_readed) = dev.read(&mut packet) {
+        tunnel::hexdump(&packet[0..bytes_readed]);
+        let _ = dns_encapsulate(&socket, String::from(server_addr), &packet[0..bytes_readed]);
+        let (_, _, data) = match dns_receive(&socket) {
+            Ok(res) => res,
+            Err(_) => return,
+        };
+        println!("got data:");
+        tunnel::hexdump(&data);
+        if &data != "nodata".as_bytes() {
+            let _ = dev.write_all(&data);
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
     // Bind a local UDP socket for sending
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -107,7 +141,6 @@ fn main() -> std::io::Result<()> {
     //println!("mtu = {}", compute_mtu(&socket, String::from(server_addr)));
 
     let mut dev: File = tunnel::open_tunnel(String::from("tun38"));
-    let mut packet: [u8; 200] = [0; 200];
 
 
     println!("> run setup ip");
@@ -115,17 +148,8 @@ fn main() -> std::io::Result<()> {
     std::io::stdin().read_line(&mut buf).unwrap();
 
     loop {
-        if let Ok(bytes_readed) = dev.read(&mut packet) {
-            tunnel::hexdump(&packet[0..bytes_readed]);
-            let _ = dns_encapsulate(&socket, String::from(server_addr), &packet[0..bytes_readed]);
-            let (_, _, data) = match dns_receive(&socket) {
-                Ok(res) => res,
-                Err(_) => continue,
-            };
-            println!("got data:");
-            tunnel::hexdump(&data);
-            let _ = dev.write_all(&data);
-        };
+        send_packet(&mut dev, &socket, &server_addr).await;
+        send_ping(&mut dev, &socket, &server_addr).await;
     }
     
     /*

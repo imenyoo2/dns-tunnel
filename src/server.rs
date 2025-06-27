@@ -1,4 +1,5 @@
 
+use std::collections::VecDeque;
 use std::os::fd::AsRawFd;
 use mio::unix::SourceFd;
 use mio::net::UdpSocket;
@@ -61,8 +62,8 @@ fn decapsulate_client_data(data: &[u8]) -> Vec<u8> {
     let mut res: Vec<u8> = vec![];
     let mut index = 0;
     while index < data.len() {
-        res.extend_from_slice(data.get(((index + 1) as usize)..(data[index] as usize)).unwrap_or(&[]));
-        index = index + (data[index] as usize);
+        res.extend_from_slice(data.get(((index + 1) as usize)..=index + (data[index] as usize)).unwrap_or(&[]));
+        index = index + (data[index] as usize) + 1;
     }
     return res[..res.len() - "hellonylyme".len()].to_vec();
 }
@@ -111,42 +112,47 @@ fn main() -> Result<(),()> {
     poll.registry().register(&mut socket, UDP_SOCKET, Interest::READABLE).map_err(|_| ())?;
 
     // buffers
-    let mut read_packets: Vec<packet::Packet> = vec![];
-    let mut write_packets: Vec<packet::Packet> = vec![];
+    let mut read_packets: VecDeque<packet::Packet> = vec![].into();
+    let mut write_packets: VecDeque<packet::Packet> = vec![].into();
 
     loop {
+        println!("read_packets = {}, write_packets = {}", read_packets.len(), write_packets.len());
+        println!("writing data to tunnel:");
+        loop {
+            if let Some(packet) = write_packets.pop_front() {
+                tunnel::hexdump(packet.data());
+                let _ = dev.write_all(packet.data());
+            } else {
+                break;
+            }
+        }
+
         // wait for Events
         poll.poll(&mut events, None).map_err(|_| ())?;
         // Receive a message from any client
         for event in &events {
             match event.token() {
                 UDP_SOCKET => {
-                    println!("test");
                     if let Ok((src, msg, data)) = dns_receive(&socket) {
                         println!("got from client:");
                         tunnel::hexdump(&data);
-                        write_packets.push(packet::Packet::from_slice(&data));
-                        if let Some(packet) = read_packets.pop() {
+                        if &data != "PING".as_bytes() {
+                            write_packets.push_back(packet::Packet::from_slice(&data));
+                        }
+                        if let Some(packet) = read_packets.pop_front() {
                             dns_encapsulate(&socket, packet.data(), msg, src);
                         } else {
-                            dns_encapsulate(&socket, "no data to send".as_bytes(), msg, src);
+                            dns_encapsulate(&socket, "nodata".as_bytes(), msg, src);
                         }
                     }
                 },
                 DEV_TUN => {
-                    println!("test2");
-                    if event.is_readable() {
-                        let mut packet = [0; 200];
-                        if let Ok(bytes_readed) = dev.read(&mut packet) {
-                            read_packets.push(packet::Packet::from_slice(&packet[..bytes_readed]));
-                        }
+                    let mut packet = [0; 200];
+                    if let Ok(bytes_readed) = dev.read(&mut packet) {
+                        println!("reading from tunnel:");
+                        tunnel::hexdump(&packet);
+                        read_packets.push_back(packet::Packet::from_slice(&packet[..bytes_readed]));
                     }
-                    if event.is_writable() {
-                        if let Some(packet) = write_packets.pop() {
-                            let _ = dev.write_all(&packet.data()[4..]);
-                        }
-                    }
-
                 }
                 Token(_) => unreachable!()
             }
