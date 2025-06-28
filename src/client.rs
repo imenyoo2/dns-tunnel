@@ -1,13 +1,17 @@
-use std::net::UdpSocket;
+use std::os::fd::AsRawFd;
+use std::collections::VecDeque;
+use mio::net::UdpSocket;
+use mio::unix::SourceFd;
+use mio::{Events, Interest, Poll, Token};
 use trust_dns_proto::op::{Message, MessageType, OpCode, Query};
 use trust_dns_proto::rr::{Name, RecordType};
-use trust_dns_proto::serialize::binary::{BinDecodable, BinEncodable, BinDecoder};
+use trust_dns_proto::serialize::binary::{BinDecodable, BinEncodable};
 use base64::{engine::general_purpose, Engine as _};
 use std::fs::File;
 use std::io::prelude::*;
-mod tunnel;
 use std::time::Duration;
-use std::thread;
+mod tunnel;
+mod packet;
 
 
 use std::env;
@@ -78,7 +82,7 @@ fn dns_encapsulate(socket: &UdpSocket, address_to: String, data: &[u8]) -> Resul
 
     // Send query
     debug(&format!("sending DNS query to {}", &address_to));
-    return socket.send_to(&req_buffer, &address_to).or_else(|_| Err(()));
+    return socket.send_to(&req_buffer, address_to.parse().unwrap()).or_else(|_| Err(()));
 
 }
 
@@ -86,8 +90,8 @@ fn dns_encapsulate(socket: &UdpSocket, address_to: String, data: &[u8]) -> Resul
 fn compute_mtu(socket: &UdpSocket, address_to: String) -> usize {
     for i in (10..0xff).step_by(10).rev() {
         let tmp_data = vec![0x41; i];
-        if let Ok(sent_data) = dns_encapsulate(socket, address_to.clone(), &tmp_data) {
-            if let Ok((_, _, data)) =  dns_receive(socket) {
+        if let Ok(_) = dns_encapsulate(socket, address_to.clone(), &tmp_data) {
+            if let Ok((_, _, _)) =  dns_receive(socket) {
                 return i;
             }
         }
@@ -95,7 +99,7 @@ fn compute_mtu(socket: &UdpSocket, address_to: String) -> usize {
     return 0;
 }
 
-async fn send_ping(dev: &mut File, socket: &UdpSocket, server_addr: &str) {
+fn send_ping(dev: &mut File, socket: &UdpSocket, server_addr: &str) {
     println!("sending ping msg");
     let _ = dns_encapsulate(&socket, String::from(server_addr), "PING".as_bytes());
     let (_, _, data) = match dns_receive(&socket) {
@@ -108,7 +112,7 @@ async fn send_ping(dev: &mut File, socket: &UdpSocket, server_addr: &str) {
     }
 }
 
-async fn send_packet(dev: &mut File, socket: &UdpSocket, server_addr: &str) {
+fn send_packet(dev: &mut File, socket: &UdpSocket, server_addr: &str) {
     let mut packet: [u8; 200] = [0; 200];
 
     if let Ok(bytes_readed) = dev.read(&mut packet) {
@@ -126,11 +130,35 @@ async fn send_packet(dev: &mut File, socket: &UdpSocket, server_addr: &str) {
     }
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
+fn read_tunnel(dev: &mut File, read_packets: &mut VecDeque<packet::Packet>) {
+    let mut packet: [u8; 200] = [0; 200];
+
+    if let Ok(bytes_readed) = dev.read(&mut packet) {
+        tunnel::hexdump(&packet[0..bytes_readed]);
+        read_packets.push_back(packet::Packet::from_slice(&packet[..bytes_readed]));
+    }
+}
+
+fn read_dns_socket(socket: &UdpSocket, write_packets: &mut VecDeque<packet::Packet>) {
+    let (_, _, data) = match dns_receive(&socket) {
+        Ok(res) => res, Err(_) => return,
+    };
+    println!("got from server");
+    tunnel::hexdump(&data);
+    if data != "nodata".as_bytes() {
+        write_packets.push_back(packet::Packet::from_slice(&data));
+    }
+}
+
+
+const UDP_SOCKET: Token = Token(0);
+const DEV_TUN: Token = Token(1);
+const BACKGROUND_INTERVAL: Duration = Duration::from_millis(500);
+
+fn main() -> std::io::Result<()> {
     // Bind a local UDP socket for sending
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-    socket.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut socket = UdpSocket::bind("0.0.0.0:0".parse().unwrap())?;
+    //socket.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
 
     //let server_addr = "172.20.10.1:53";
     let server_addr = "10.0.2.3:53";
@@ -142,14 +170,56 @@ async fn main() -> std::io::Result<()> {
 
     let mut dev: File = tunnel::open_tunnel(String::from("tun38"));
 
+    // settuping epoll
+    let mut poll = Poll::new()?;
+
+    let raw_fd = dev.as_raw_fd();
+    let mut tun_source = SourceFd(&raw_fd);
+    poll.registry().register(&mut tun_source, DEV_TUN, Interest::READABLE)?;
+    poll.registry().register(&mut socket, UDP_SOCKET, Interest::READABLE)?;
+
+    let mut read_packets: VecDeque<packet::Packet> = vec![].into();
+    let mut write_packets: VecDeque<packet::Packet> = vec![].into();
+
+    let mut events = Events::with_capacity(128);
+
 
     println!("> run setup ip");
     let mut buf = String::new();
     std::io::stdin().read_line(&mut buf).unwrap();
 
+
     loop {
-        send_packet(&mut dev, &socket, &server_addr).await;
-        send_ping(&mut dev, &socket, &server_addr).await;
+
+        if let Some(packet) = read_packets.pop_front() {
+            println!("sending to server");
+            let _ = dns_encapsulate(&socket, String::from(server_addr), packet.data());
+        }
+        if let Some(packet) = write_packets.pop_front() {
+            let _ = dev.write_all(packet.data());
+        }
+        let _ = dns_encapsulate(&socket, String::from(server_addr), "PING".as_bytes());
+
+        poll.poll(&mut events, Some(BACKGROUND_INTERVAL))?;
+
+        for event in &events {
+            match event.token() {
+                DEV_TUN => {
+                    read_tunnel(&mut dev, &mut read_packets);
+                },
+                UDP_SOCKET => {
+                    read_dns_socket(&socket, &mut write_packets);
+                },
+                Token(_) => {
+                    continue;
+                }
+            }
+        }
+        /*
+        println!("> run setup ip");
+        let mut buf = String::new();
+        std::io::stdin().read_line(&mut buf).unwrap();
+        */
     }
     
     /*
