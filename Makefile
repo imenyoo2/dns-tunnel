@@ -10,6 +10,10 @@ push:
 #	cp ./target/debug/client ~/goinfre/
 #	cp ./target/debug/tunnel ~/goinfre/
 
+server ip:
+	sudo ip addr add 10.0.0.1/24 dev tun39
+	sudo ip link set dev tun39 up
+	sudo ip link set dev tun39 mtu 110
 
 ip:
 	sudo ip addr add 10.0.0.2/24 dev tun38

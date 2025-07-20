@@ -91,10 +91,10 @@ const DEV_TUN: Token = Token(1);
 
 fn main() -> Result<(),()> {
     // Bind the UDP socket to localhost:8080
-    let mut socket = UdpSocket::bind("0.0.0.0:53".parse().unwrap()).map_err(|_| ())?;
-    println!("UDP server listening on 0.0.0.0:53");
+    let mut socket = UdpSocket::bind("127.0.0.1:8080".parse().unwrap()).map_err(|_| ())?;
+    println!("UDP server listening on 127.0.0.1:8080");
 
-    let mut dev: File = tunnel::open_tunnel(String::from("tun38"));
+    let mut dev: File = tunnel::open_tunnel(String::from("tun39"));
 
     let mut poll = Poll::new().map_err(|_| ())?;
 
